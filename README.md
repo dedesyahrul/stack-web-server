@@ -30,7 +30,7 @@ Script otomatis untuk menginstal dan mengkonfigurasi LEMP/LAMP stack pada sistem
 
 1. Download script:
    ```bash
-   wget https://raw.githubusercontent.com/user/repo/main/install_stack.sh
+   wget https://raw.githubusercontent.com/dedesyahrul/stack-web-server/main/install_stack.sh
    ```
 
 2. Berikan izin eksekusi:
