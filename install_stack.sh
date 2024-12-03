@@ -190,33 +190,40 @@ EOF
 
 # Fungsi untuk menginstal LEMP
 install_lemp() {
+    local total_steps=4
     echo "Menginstal LEMP Stack..."
     
     # Konfirmasi sebelum instalasi
     read -p "Apakah Anda yakin ingin menginstal LEMP Stack? (y/n): " confirm
     if [[ $confirm != "y" ]]; then
         echo "Instalasi LEMP Stack dibatalkan."
-        return
+        return 1
     fi
     
     # Menginstal Nginx
+    log_progress 1 $total_steps "Menginstal Nginx..."
     if ! apt install -y nginx; then
-        echo "Gagal menginstal Nginx"
-        exit 1
+        log_error "Gagal menginstal Nginx"
+        return 1
     fi
     systemctl enable nginx
     systemctl start nginx
     
     # Menginstal dan mengkonfigurasi PHP-FPM
+    log_progress 2 $total_steps "Menginstal PHP-FPM..."
     if ! apt install -y php8.3-fpm; then
-        echo "Gagal menginstal PHP-FPM"
-        exit 1
+        log_error "Gagal menginstal PHP-FPM"
+        return 1
     fi
     systemctl enable php8.3-fpm
     systemctl start php8.3-fpm
     
-    configure_php
-    configure_mysql
+    # Konfigurasi PHP dan MySQL
+    log_progress 3 $total_steps "Mengkonfigurasi PHP..."
+    configure_php || return 1
+    
+    log_progress 4 $total_steps "Mengkonfigurasi MySQL..."
+    configure_mysql || return 1
     
     # Mengkonfigurasi Nginx dengan PHP 8.3
     cat > /etc/nginx/sites-available/default << 'EOL'
@@ -550,19 +557,40 @@ main() {
         
         case $choice in
             1)
-                install_lemp & show_spinner $!
+                install_lemp
                 ;;
             2)
-                install_lamp & show_spinner $!
+                install_lamp
                 ;;
             3)
-                install_phpmyadmin & show_spinner $!
+                install_phpmyadmin
                 ;;
             4)
                 create_modern_project
                 ;;
             5)
                 show_modern_status
+                ;;
+            6)
+                install_redis
+                ;;
+            7)
+                install_supervisor
+                ;;
+            8)
+                install_memcached
+                ;;
+            9)
+                install_letsencrypt
+                ;;
+            10)
+                install_rabbitmq
+                ;;
+            11)
+                install_monitoring
+                ;;
+            12)
+                setup_auto_backup
                 ;;
             13)
                 echo -e "\e[1;32m👋 Terima kasih telah menggunakan installer ini!\e[0m"
