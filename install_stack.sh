@@ -53,45 +53,29 @@ add_php_repo() {
 install_php_versions() {
     echo "Menginstal multiple versi PHP..."
     
-    # PHP 7.4
-    if ! apt install -y php7.4-fpm php7.4-cli php7.4-common php7.4-curl php7.4-mbstring \
-    php7.4-mysql php7.4-xml php7.4-zip php7.4-gd php7.4-intl php7.4-bcmath; then
-        echo "Gagal menginstal PHP 7.4"
-        exit 1
-    fi
+    # Array versi PHP yang akan diinstal
+    php_versions=("7.4" "8.0" "8.1" "8.2" "8.3")
     
-    # PHP 8.0
-    if ! apt install -y php8.0-fpm php8.0-cli php8.0-common php8.0-curl php8.0-mbstring \
-    php8.0-mysql php8.0-xml php8.0-zip php8.0-gd php8.0-intl php8.0-bcmath; then
-        echo "Gagal menginstal PHP 8.0"
-        exit 1
-    fi
-    
-    # PHP 8.1
-    if ! apt install -y php8.1-fpm php8.1-cli php8.1-common php8.1-curl php8.1-mbstring \
-    php8.1-mysql php8.1-xml php8.1-zip php8.1-gd php8.1-intl php8.1-bcmath; then
-        echo "Gagal menginstal PHP 8.1"
-        exit 1
-    fi
-    
-    # PHP 8.2
-    if ! apt install -y php8.2-fpm php8.2-cli php8.2-common php8.2-curl php8.2-mbstring \
-    php8.2-mysql php8.2-xml php8.2-zip php8.2-gd php8.2-intl php8.2-bcmath; then
-        echo "Gagal menginstal PHP 8.2"
-        exit 1
-    fi
-    
-    # PHP 8.3
-    if ! apt install -y php8.3-fpm php8.3-cli php8.3-common php8.3-curl php8.3-mbstring \
-    php8.3-mysql php8.3-xml php8.3-zip php8.3-gd php8.3-intl php8.3-bcmath; then
-        echo "Gagal menginstal PHP 8.3"
-        exit 1
-    fi
-    
-    # Mengatur timezone untuk semua versi PHP
-    for version in 7.4 8.0 8.1 8.2 8.3; do
-        sed -i "s/;date.timezone =/date.timezone = Asia\/Jakarta/" /etc/php/${version}/fpm/php.ini
-        sed -i "s/;date.timezone =/date.timezone = Asia\/Jakarta/" /etc/php/${version}/cli/php.ini
+    for version in "${php_versions[@]}"; do
+        echo "Menginstal PHP $version..."
+        if ! apt install -y php${version}-fpm php${version}-cli php${version}-common \
+            php${version}-curl php${version}-mbstring php${version}-mysql php${version}-xml \
+            php${version}-zip php${version}-gd php${version}-intl php${version}-bcmath; then
+            echo "Gagal menginstal PHP $version"
+            return 1
+        fi
+        
+        # Konfigurasi timezone dengan pengecekan file
+        local fpm_ini="/etc/php/${version}/fpm/php.ini"
+        local cli_ini="/etc/php/${version}/cli/php.ini"
+        
+        if [[ -f "$fpm_ini" ]]; then
+            sed -i "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$fpm_ini"
+        fi
+        
+        if [[ -f "$cli_ini" ]]; then
+            sed -i "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$cli_ini"
+        fi
     done
 }
 
@@ -106,23 +90,42 @@ configure_php() {
 configure_mysql() {
     echo "Mengkonfigurasi MySQL..."
     
-    # Menginstal MySQL secara aman
-    apt install -y mysql-server
+    # Cek apakah MySQL sudah terinstal
+    if ! dpkg -l | grep -q mysql-server; then
+        apt install -y mysql-server || {
+            echo "Gagal menginstal MySQL"
+            return 1
+        }
+    fi
 
-    # Generate password root MySQL yang aman
-    ROOT_PASS=$(openssl rand -base64 12)
+    # Generate password yang aman
+    ROOT_PASS=$(openssl rand -base64 16)
     
-    # Mengamankan instalasi MySQL tanpa prompt
-    mysql --user=root <<_EOF_
+    # Backup konfigurasi MySQL yang ada
+    if [[ -f /etc/mysql/mysql.conf.d/mysqld.cnf ]]; then
+        cp /etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/mysql.conf.d/mysqld.cnf.bak
+    fi
+    
+    # Pastikan MySQL berjalan
+    systemctl start mysql || {
+        echo "Gagal menjalankan MySQL"
+        return 1
+    }
+    
+    # Konfigurasi MySQL dengan penanganan error
+    mysql --user=root <<EOF || {
+        echo "Gagal mengkonfigurasi MySQL"
+        return 1
+    }
 ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${ROOT_PASS}';
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
 DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
-_EOF_
+EOF
 
-    # Menyimpan kredensial MySQL ke file konfigurasi
+    # Simpan kredensial dengan permission yang benar
     cat > /root/.my.cnf <<EOF
 [client]
 user=root
@@ -130,21 +133,49 @@ password=${ROOT_PASS}
 EOF
     chmod 600 /root/.my.cnf
 
-    # Membuat user MySQL baru
-    read -p "Masukkan username MySQL baru: " mysql_user
-    while [[ -z "$mysql_user" || "$mysql_user" =~ [^a-zA-Z0-9_] ]]; do
-        echo "Username tidak valid. Gunakan hanya huruf, angka, dan underscore."
+    # Validasi input user MySQL
+    while true; do
         read -p "Masukkan username MySQL baru: " mysql_user
+        if [[ $mysql_user =~ ^[a-zA-Z0-9_]+$ ]]; then
+            break
+        else
+            echo "Username tidak valid. Gunakan hanya huruf, angka, dan underscore."
+        fi
     done
-    read -s -p "Masukkan password MySQL baru: " mysql_pass
-    echo
+
+    # Validasi password MySQL
+    while true; do
+        read -s -p "Masukkan password MySQL baru (minimal 8 karakter): " mysql_pass
+        echo
+        if [[ ${#mysql_pass} -ge 8 ]]; then
+            break
+        else
+            echo "Password terlalu pendek. Minimal 8 karakter."
+        fi
+    done
     
-    mysql -e "CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';"
-    mysql -e "GRANT ALL PRIVILEGES ON *.* TO '${mysql_user}'@'localhost' WITH GRANT OPTION;"
+    # Buat user baru dengan penanganan error
+    mysql -e "CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';" || {
+        echo "Gagal membuat user MySQL baru"
+        return 1
+    }
+    mysql -e "GRANT ALL PRIVILEGES ON *.* TO '${mysql_user}'@'localhost' WITH GRANT OPTION;" || {
+        echo "Gagal memberikan privileges ke user MySQL"
+        return 1
+    }
     mysql -e "FLUSH PRIVILEGES;"
     
     echo "Password root MySQL: ${ROOT_PASS}"
     echo "Silakan catat password root MySQL di atas!"
+    
+    # Simpan informasi kredensial ke file terpisah dengan permission yang aman
+    cat > /root/mysql_credentials.txt <<EOF
+Root Username: root
+Root Password: ${ROOT_PASS}
+User Username: ${mysql_user}
+User Password: ${mysql_pass}
+EOF
+    chmod 600 /root/mysql_credentials.txt
 }
 
 # Fungsi untuk menginstal LEMP
@@ -460,6 +491,29 @@ EOF
     exec 2>&1
 }
 
+# Fungsi untuk memeriksa spesifikasi sistem
+verify_system() {
+    echo "Memeriksa spesifikasi sistem..."
+    
+    # Cek RAM
+    total_ram=$(free -m | awk '/^Mem:/{print $2}')
+    if [ $total_ram -lt 1024 ]; then
+        echo "⚠️ Peringatan: RAM kurang dari 1GB. Performa mungkin tidak optimal."
+    fi
+    
+    # Cek disk space
+    free_space=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
+    if [ $(echo "$free_space < 10" | bc) -eq 1 ]; then
+        echo "⚠️ Peringatan: Ruang disk kurang dari 10GB."
+    fi
+    
+    # Cek koneksi internet
+    if ! ping -c 1 google.com >/dev/null 2>&1; then
+        echo "❌ Error: Tidak ada koneksi internet."
+        exit 1
+    fi
+}
+
 # Main program
 main() {
     setup_logging
@@ -682,28 +736,6 @@ cleanup() {
 
 # Tambahkan di akhir instalasi
 trap cleanup EXIT
-
-verify_system() {
-    echo "Memeriksa spesifikasi sistem..."
-    
-    # Cek RAM
-    total_ram=$(free -m | awk '/^Mem:/{print $2}')
-    if [ $total_ram -lt 1024 ]; then
-        echo "⚠️ Peringatan: RAM kurang dari 1GB. Performa mungkin tidak optimal."
-    fi
-    
-    # Cek disk space
-    free_space=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
-    if [ $(echo "$free_space < 10" | bc) -eq 1 ]; then
-        echo "⚠️ Peringatan: Ruang disk kurang dari 10GB."
-    fi
-    
-    # Cek koneksi internet
-    if ! ping -c 1 google.com >/dev/null 2>&1; then
-        echo "❌ Error: Tidak ada koneksi internet."
-        exit 1
-    fi
-}
 
 security_hardening() {
     echo "Menerapkan konfigurasi keamanan dasar..."
