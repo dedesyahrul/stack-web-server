@@ -939,3 +939,6 @@ check_logger() {
 
 # Panggil fungsi ini di awal skrip
 check_logger
+
+# Jalankan fungsi main
+main
