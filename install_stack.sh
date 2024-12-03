@@ -130,98 +130,110 @@ configure_php() {
 configure_mysql() {
     echo "Mengkonfigurasi MySQL..."
     
-    # Tambahkan timeout dan retry
-    local max_attempts=3
-    local attempt=1
+    # Pastikan environment variable tersedia
+    export DEBIAN_FRONTEND=noninteractive
     
-    while [ $attempt -le $max_attempts ]; do
-        if timeout 300 apt install -y mysql-server; then
-            break
-        fi
-        log_error "Percobaan $attempt dari $max_attempts gagal"
-        ((attempt++))
-        sleep 5
-    done
+    # Hapus instalasi MySQL yang ada
+    apt-get remove --purge -y mysql-server mysql-client mysql-common
+    apt-get autoremove -y
+    apt-get autoclean
     
-    if [ $attempt -gt $max_attempts ]; then
-        log_error "Gagal menginstal MySQL setelah $max_attempts percobaan"
-        return 1
-    fi
+    # Hapus file konfigurasi yang tersisa
+    rm -rf /etc/mysql /var/lib/mysql
     
-    # Tambahkan validasi password yang lebih ketat
-    while true; do
-        read -s -p "Masukkan password MySQL (min. 8 karakter, harus mengandung huruf dan angka): " mysql_pass
-        echo
-        if [[ ${#mysql_pass} -ge 8 && "$mysql_pass" =~ [A-Za-z] && "$mysql_pass" =~ [0-9] ]]; then
-            break
-        fi
-        echo "Password tidak memenuhi persyaratan keamanan"
-    done
+    # Update repository
+    apt-get update
     
-    # Generate password yang lebih aman
+    # Buat password root MySQL yang aman secara otomatis
     ROOT_PASS=$(openssl rand -base64 32)
     
-    # Pastikan MySQL berjalan sebelum melakukan konfigurasi
-    systemctl start mysql || {
-        echo "Gagal menjalankan MySQL"
-        return 1
-    }
+    # Pre-set root password untuk menghindari prompt
+    debconf-set-selections <<< "mysql-server mysql-server/root_password password $ROOT_PASS"
+    debconf-set-selections <<< "mysql-server mysql-server/root_password_again password $ROOT_PASS"
+    
+    # Instal MySQL server
+    apt-get install -y mysql-server
     
     # Tunggu MySQL siap
+    systemctl start mysql
     for i in {1..30}; do
         if mysqladmin ping &>/dev/null; then
             break
         fi
-        sleep 1
+        sleep 2
     done
     
-    # Konfigurasi MySQL dengan penanganan error yang lebih baik
-    if ! mysql --user=root <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${ROOT_PASS}';
-DELETE FROM mysql.user WHERE User='';
-DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-DROP DATABASE IF EXISTS test;
-DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-FLUSH PRIVILEGES;
-EOF
-    then
-        echo "Gagal mengkonfigurasi MySQL"
-        return 1
-    fi
-
-    # Simpan kredensial dengan permission yang lebih aman
-    install -m 600 /dev/null /root/.my.cnf
-    cat > /root/.my.cnf <<EOF
-[client]
-user=root
-password=${ROOT_PASS}
-EOF
-
-    # Validasi input user MySQL
+    # Buat user baru dengan validasi yang lebih baik
     while true; do
-        read -p "Masukkan username MySQL baru: " mysql_user
+        echo -n "Masukkan username MySQL baru: "
+        read mysql_user
+        
+        # Validasi username
         if [[ $mysql_user =~ ^[a-zA-Z0-9_]+$ ]]; then
             break
         else
             echo "Username tidak valid. Gunakan hanya huruf, angka, dan underscore."
         fi
     done
-
-    # Buat user baru dengan penanganan error
-    mysql -e "CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';" || {
-        echo "Gagal membuat user MySQL baru"
-        return 1
-    }
-    mysql -e "GRANT ALL PRIVILEGES ON *.* TO '${mysql_user}'@'localhost' WITH GRANT OPTION;" || {
-        echo "Gagal memberikan privileges ke user MySQL"
-        return 1
-    }
-    mysql -e "FLUSH PRIVILEGES;"
     
-    echo "Password root MySQL: ${ROOT_PASS}"
-    echo "Silakan catat password root MySQL di atas!"
+    # Fungsi untuk validasi password
+    validate_password() {
+        local pass="$1"
+        if [[ ${#pass} -lt 8 ]]; then
+            echo "Password harus minimal 8 karakter"
+            return 1
+        fi
+        if ! [[ "$pass" =~ [A-Za-z] ]]; then
+            echo "Password harus mengandung huruf"
+            return 1
+        fi
+        if ! [[ "$pass" =~ [0-9] ]]; then
+            echo "Password harus mengandung angka"
+            return 1
+        fi
+        return 0
+    }
     
-    # Simpan informasi kredensial ke file terpisah dengan permission yang aman
+    # Loop untuk mendapatkan password yang valid
+    while true; do
+        echo -n "Masukkan password MySQL (min. 8 karakter, harus mengandung huruf dan angka): "
+        read -s mysql_pass
+        echo
+        
+        if validate_password "$mysql_pass"; then
+            echo -n "Konfirmasi password: "
+            read -s mysql_pass_confirm
+            echo
+            
+            if [ "$mysql_pass" = "$mysql_pass_confirm" ]; then
+                break
+            else
+                echo "Password tidak cocok, silakan coba lagi"
+            fi
+        fi
+    done
+    
+    # Konfigurasi MySQL dengan penanganan error yang lebih baik
+    mysql --user=root --password="$ROOT_PASS" <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${ROOT_PASS}';
+CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';
+GRANT ALL PRIVILEGES ON *.* TO '${mysql_user}'@'localhost' WITH GRANT OPTION;
+DELETE FROM mysql.user WHERE User='';
+DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
+DROP DATABASE IF EXISTS test;
+DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+FLUSH PRIVILEGES;
+EOF
+    
+    # Simpan kredensial dengan permission yang aman
+    install -m 600 /dev/null /root/.my.cnf
+    cat > /root/.my.cnf <<EOF
+[client]
+user=root
+password=${ROOT_PASS}
+EOF
+    
+    # Simpan informasi kredensial ke file terpisah
     cat > /root/mysql_credentials.txt <<EOF
 Root Username: root
 Root Password: ${ROOT_PASS}
@@ -229,6 +241,10 @@ User Username: ${mysql_user}
 User Password: ${mysql_pass}
 EOF
     chmod 600 /root/mysql_credentials.txt
+    
+    echo "MySQL berhasil dikonfigurasi!"
+    echo "Password root MySQL: ${ROOT_PASS}"
+    echo "Silakan catat password root MySQL di atas!"
 }
 
 # Tambahkan definisi fungsi log_progress di bagian atas skrip
