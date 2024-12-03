@@ -305,6 +305,9 @@ EOL
 install_phpmyadmin() {
     echo "Menginstal phpMyAdmin..."
     
+    # Definisikan versi phpMyAdmin
+    PHPMYADMIN_VERSION="5.2.1"
+    
     # Tambahkan pengecekan koneksi internet
     if ! ping -c 1 files.phpmyadmin.net &>/dev/null; then
         echo "Tidak dapat mengakses files.phpmyadmin.net"
@@ -320,7 +323,7 @@ install_phpmyadmin() {
         echo "Gagal mengunduh phpMyAdmin"
         rm -rf "$TEMP_DIR"
         return 1
-    }
+    fi
     
     # Pindahkan ke direktori web
     rm -rf /usr/share/phpmyadmin
