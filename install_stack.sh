@@ -428,7 +428,39 @@ create_modern_project() {
     echo -e "\e[1;32m✅ Proyek ${project_name} berhasil dibuat!\e[0m"
 }
 
-# Update main program
+# Tambahkan fungsi untuk logging error
+log_error() {
+    echo -e "\e[1;31m[ERROR] $1\e[0m"
+    logger -t install_stack "[ERROR] $1"
+}
+
+# Tambahkan trap untuk penanganan error
+trap 'log_error "Script mengalami kegagalan pada baris $LINENO"' ERR
+
+# Fungsi untuk setup logging
+setup_logging() {
+    # Buat direktori log
+    mkdir -p /var/log/stack-installer
+    
+    # Konfigurasi log rotation
+    cat > /etc/logrotate.d/stack-installer <<EOF
+/var/log/stack-installer/*.log {
+    weekly
+    rotate 4
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 644 root root
+}
+EOF
+    
+    # Mulai logging
+    exec 1> >(tee -a "/var/log/stack-installer/install_$(date +%Y%m%d_%H%M%S).log")
+    exec 2>&1
+}
+
+# Main program
 main() {
     setup_logging
     check_root
@@ -616,15 +648,6 @@ EOL
     echo "Backup otomatis telah diatur!"
 }
 
-# Tambahkan fungsi untuk logging error
-log_error() {
-    echo -e "\e[1;31m[ERROR] $1\e[0m"
-    logger -t install_stack "[ERROR] $1"
-}
-
-# Tambahkan trap untuk penanganan error
-trap 'log_error "Script mengalami kegagalan pada baris $LINENO"' ERR
-
 # Sebelum memodifikasi file konfigurasi
 backup_config() {
     local file=$1
@@ -742,28 +765,6 @@ $(php -v | head -n 1)
 - Fail2ban terinstal
 - SSH root login dinonaktifkan
 EOF
-}
-
-setup_logging() {
-    # Buat direktori log
-    mkdir -p /var/log/stack-installer
-    
-    # Konfigurasi log rotation
-    cat > /etc/logrotate.d/stack-installer <<EOF
-/var/log/stack-installer/*.log {
-    weekly
-    rotate 4
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 644 root root
-}
-EOF
-    
-    # Mulai logging
-    exec 1> >(tee -a "/var/log/stack-installer/install_$(date +%Y%m%d_%H%M%S).log")
-    exec 2>&1
 }
 
 # Tambahkan fungsi untuk penanganan error yang lebih detail
