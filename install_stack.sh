@@ -521,8 +521,6 @@ main() {
     check_os
     verify_system
     install_common_deps
-    install_additional_deps
-    security_hardening
     
     while true; do
         show_modern_menu
@@ -544,7 +542,6 @@ main() {
             5)
                 show_modern_status
                 ;;
-            # ... existing cases ...
             13)
                 echo -e "\e[1;32m👋 Terima kasih telah menggunakan installer ini!\e[0m"
                 exit 0
@@ -556,9 +553,6 @@ main() {
         
         read -p "Tekan Enter untuk melanjutkan..."
     done
-    
-    generate_readme
-    cleanup
 }
 
 # Fungsi untuk menginstal Node.js dan npm
