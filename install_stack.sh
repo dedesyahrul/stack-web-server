@@ -57,10 +57,15 @@ install_php_versions() {
     php_versions=("7.4" "8.0" "8.1" "8.2" "8.3")
     
     for version in "${php_versions[@]}"; do
-        echo "Menginstal PHP $version..."
-        # Tambahkan pengecekan apakah versi PHP sudah terinstal
-        if dpkg -l | grep -q "php${version}-fpm"; then
-            echo "PHP $version sudah terinstal"
+        # Tambahkan validasi versi PHP
+        if [[ ! $version =~ ^[0-9]+\.[0-9]+$ ]]; then
+            log_error "Versi PHP tidak valid: $version"
+            continue
+        fi
+        
+        # Tambahkan timeout untuk instalasi
+        if ! timeout 300 DEBIAN_FRONTEND=noninteractive apt install -y php${version}-fpm php${version}-cli; then
+            log_error "Timeout saat menginstal PHP $version"
             continue
         fi
         
@@ -98,12 +103,34 @@ configure_php() {
 configure_mysql() {
     echo "Mengkonfigurasi MySQL..."
     
-    # Tambahkan timeout untuk instalasi MySQL
-    if ! timeout 300 apt install -y mysql-server; then
-        echo "Timeout saat menginstal MySQL"
+    # Tambahkan timeout dan retry
+    local max_attempts=3
+    local attempt=1
+    
+    while [ $attempt -le $max_attempts ]; do
+        if timeout 300 apt install -y mysql-server; then
+            break
+        fi
+        log_error "Percobaan $attempt dari $max_attempts gagal"
+        ((attempt++))
+        sleep 5
+    done
+    
+    if [ $attempt -gt $max_attempts ]; then
+        log_error "Gagal menginstal MySQL setelah $max_attempts percobaan"
         return 1
     fi
-
+    
+    # Tambahkan validasi password yang lebih ketat
+    while true; do
+        read -s -p "Masukkan password MySQL (min. 8 karakter, harus mengandung huruf dan angka): " mysql_pass
+        echo
+        if [[ ${#mysql_pass} -ge 8 && "$mysql_pass" =~ [A-Za-z] && "$mysql_pass" =~ [0-9] ]]; then
+            break
+        fi
+        echo "Password tidak memenuhi persyaratan keamanan"
+    done
+    
     # Generate password yang lebih aman
     ROOT_PASS=$(openssl rand -base64 32)
     
@@ -153,17 +180,6 @@ EOF
         fi
     done
 
-    # Validasi password MySQL
-    while true; do
-        read -s -p "Masukkan password MySQL baru (minimal 8 karakter): " mysql_pass
-        echo
-        if [[ ${#mysql_pass} -ge 8 ]]; then
-            break
-        else
-            echo "Password terlalu pendek. Minimal 8 karakter."
-        fi
-    done
-    
     # Buat user baru dengan penanganan error
     mysql -e "CREATE USER '${mysql_user}'@'localhost' IDENTIFIED BY '${mysql_pass}';" || {
         echo "Gagal membuat user MySQL baru"
@@ -334,6 +350,21 @@ install_phpmyadmin() {
         return 1
     fi
     
+    # Tambahkan verifikasi checksum
+    PHPMYADMIN_SHA256="<expected_sha256_checksum>"
+    
+    # Verifikasi file yang didownload
+    if ! echo "$PHPMYADMIN_SHA256 phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip" | sha256sum -c; then
+        log_error "Verifikasi checksum phpMyAdmin gagal"
+        return 1
+    }
+    
+    # Tambahkan penanganan error saat ekstrak
+    if ! unzip -q "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
+        log_error "Gagal mengekstrak phpMyAdmin"
+        return 1
+    }
+    
     # Pindahkan ke direktori web
     rm -rf /usr/share/phpmyadmin
     mv "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages" /usr/share/phpmyadmin
@@ -502,8 +533,16 @@ create_modern_project() {
 
 # Tambahkan fungsi untuk logging error
 log_error() {
-    echo -e "\e[1;31m[ERROR] $1\e[0m"
-    logger -t install_stack "[ERROR] $1"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "\e[1;31m[ERROR] [$timestamp] $1\e[0m" >&2
+    logger -t install_stack -p err "$1"
+}
+
+# Tambahkan fungsi untuk logging info
+log_info() {
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "[INFO] [$timestamp] $1"
+    logger -t install_stack -p info "$1"
 }
 
 # Tambahkan trap untuk penanganan error
@@ -1000,3 +1039,37 @@ check_logger
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
+
+# Di bagian atas script
+cleanup_and_exit() {
+    local exit_code=$?
+    echo "Membersihkan..."
+    # Hapus file temporary
+    rm -rf /tmp/stack-installer-*
+    # Hapus lock file jika ada
+    rm -f /var/lock/stack-installer.lock
+    exit $exit_code
+}
+
+trap cleanup_and_exit EXIT
+trap 'exit 1' INT TERM
+
+# Di awal main()
+LOCK_FILE="/var/lock/stack-installer.lock"
+
+if [ -f "$LOCK_FILE" ]; then
+    echo "Installer sedang berjalan di proses lain"
+    exit 1
+fi
+
+touch "$LOCK_FILE"
+
+check_disk_space() {
+    local required_space=5120  # 5GB dalam MB
+    local available_space=$(df -BM / | awk 'NR==2 {print $4}' | sed 's/M//')
+    
+    if [ "$available_space" -lt "$required_space" ]; then
+        log_error "Ruang disk tidak mencukupi. Dibutuhkan minimal 5GB"
+        return 1
+    fi
+}
