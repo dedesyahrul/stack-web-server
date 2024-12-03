@@ -45,8 +45,14 @@ install_common_deps() {
 # Fungsi untuk menambahkan repository PHP
 add_php_repo() {
     echo "Menambahkan repository PHP..."
-    add-apt-repository -y ppa:ondrej/php
-    apt update
+    # Instal dependensi yang diperlukan
+    apt-get install -y software-properties-common apt-transport-https lsb-release ca-certificates
+
+    # Tambahkan repository Ondřej Surý
+    LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+    
+    # Update package list
+    apt-get update
 }
 
 # Fungsi untuk menginstal multiple versi PHP
@@ -215,7 +221,7 @@ log_progress() {
 
 # Fungsi untuk menginstal LEMP
 install_lemp() {
-    local total_steps=4
+    local total_steps=5  # Menambah satu langkah untuk repo PHP
     echo "Menginstal LEMP Stack..."
     
     # Konfirmasi sebelum instalasi
@@ -225,8 +231,15 @@ install_lemp() {
         return 1
     fi
     
+    # Menambahkan repository PHP
+    log_progress 1 $total_steps "Menambahkan repository PHP..."
+    add_php_repo || {
+        log_error "Gagal menambahkan repository PHP"
+        return 1
+    }
+    
     # Menginstal Nginx
-    log_progress 1 $total_steps "Menginstal Nginx..."
+    log_progress 2 $total_steps "Menginstal Nginx..."
     if ! apt install -y nginx; then
         log_error "Gagal menginstal Nginx"
         return 1
@@ -235,8 +248,10 @@ install_lemp() {
     systemctl start nginx
     
     # Menginstal dan mengkonfigurasi PHP-FPM
-    log_progress 2 $total_steps "Menginstal PHP-FPM..."
-    if ! apt install -y php8.3-fpm; then
+    log_progress 3 $total_steps "Menginstal PHP-FPM..."
+    if ! apt install -y php8.3-fpm php8.3-cli php8.3-common \
+        php8.3-curl php8.3-mbstring php8.3-mysql php8.3-xml \
+        php8.3-zip php8.3-gd php8.3-intl php8.3-bcmath; then
         log_error "Gagal menginstal PHP-FPM"
         return 1
     fi
@@ -244,10 +259,10 @@ install_lemp() {
     systemctl start php8.3-fpm
     
     # Konfigurasi PHP dan MySQL
-    log_progress 3 $total_steps "Mengkonfigurasi PHP..."
+    log_progress 4 $total_steps "Mengkonfigurasi PHP..."
     configure_php || return 1
     
-    log_progress 4 $total_steps "Mengkonfigurasi MySQL..."
+    log_progress 5 $total_steps "Mengkonfigurasi MySQL..."
     configure_mysql || return 1
     
     # Mengkonfigurasi Nginx dengan PHP 8.3
@@ -279,7 +294,27 @@ EOL
     # Set PHP 8.3 sebagai default
     update-alternatives --set php /usr/bin/php8.3
     
-    echo "LEMP Stack telah berhasil diinstal dengan PHP 8.3 sebagai default!"
+    # Konfigurasi PHP untuk production
+    for ini_file in /etc/php/8.3/fpm/php.ini /etc/php/8.3/cli/php.ini; do
+        if [[ -f "$ini_file" ]]; then
+            # Backup file konfigurasi
+            cp "$ini_file" "${ini_file}.bak"
+            
+            # Update konfigurasi PHP
+            sed -i 's/memory_limit = .*/memory_limit = 256M/' "$ini_file"
+            sed -i 's/max_execution_time = .*/max_execution_time = 60/' "$ini_file"
+            sed -i 's/upload_max_filesize = .*/upload_max_filesize = 64M/' "$ini_file"
+            sed -i 's/post_max_size = .*/post_max_size = 64M/' "$ini_file"
+            sed -i 's/;date.timezone.*/date.timezone = Asia\/Jakarta/' "$ini_file"
+        fi
+    done
+    
+    # Restart PHP-FPM
+    systemctl restart php8.3-fpm
+    
+    echo "LEMP Stack telah berhasil diinstal dengan PHP 8.3!"
+    echo "Versi PHP yang terinstal:"
+    php -v
 }
 
 # Fungsi untuk menginstal LAMP
@@ -584,7 +619,7 @@ verify_system() {
     # Cek disk space
     free_space=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
     if [ $(echo "$free_space < 10" | bc) -eq 1 ]; then
-        echo "⚠��� Peringatan: Ruang disk kurang dari 10GB."
+        echo "⚠️ Peringatan: Ruang disk kurang dari 10GB."
     fi
     
     # Cek koneksi internet
