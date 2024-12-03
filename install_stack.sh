@@ -58,24 +58,32 @@ install_php_versions() {
     
     for version in "${php_versions[@]}"; do
         echo "Menginstal PHP $version..."
-        if ! apt install -y php${version}-fpm php${version}-cli php${version}-common \
+        # Tambahkan pengecekan apakah versi PHP sudah terinstal
+        if dpkg -l | grep -q "php${version}-fpm"; then
+            echo "PHP $version sudah terinstal"
+            continue
+        fi
+        
+        # Tambahkan penanganan error yang lebih baik
+        if ! DEBIAN_FRONTEND=noninteractive apt install -y php${version}-fpm php${version}-cli php${version}-common \
             php${version}-curl php${version}-mbstring php${version}-mysql php${version}-xml \
             php${version}-zip php${version}-gd php${version}-intl php${version}-bcmath; then
             echo "Gagal menginstal PHP $version"
             return 1
         fi
         
-        # Konfigurasi timezone dengan pengecekan file
-        local fpm_ini="/etc/php/${version}/fpm/php.ini"
-        local cli_ini="/etc/php/${version}/cli/php.ini"
-        
-        if [[ -f "$fpm_ini" ]]; then
-            sed -i "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$fpm_ini"
-        fi
-        
-        if [[ -f "$cli_ini" ]]; then
-            sed -i "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$cli_ini"
-        fi
+        # Konfigurasi timezone dengan pengecekan file yang lebih aman
+        for ini_file in "/etc/php/${version}/fpm/php.ini" "/etc/php/${version}/cli/php.ini"; do
+            if [[ -f "$ini_file" ]]; then
+                # Backup file konfigurasi sebelum modifikasi
+                cp "$ini_file" "${ini_file}.bak"
+                # Gunakan sed yang lebih aman
+                sed -i.bak "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$ini_file"
+                if ! grep -q "date.timezone = Asia/Jakarta" "$ini_file"; then
+                    echo "date.timezone = Asia/Jakarta" >> "$ini_file"
+                fi
+            fi
+        done
     done
 }
 
@@ -90,33 +98,31 @@ configure_php() {
 configure_mysql() {
     echo "Mengkonfigurasi MySQL..."
     
-    # Cek apakah MySQL sudah terinstal
-    if ! dpkg -l | grep -q mysql-server; then
-        apt install -y mysql-server || {
-            echo "Gagal menginstal MySQL"
-            return 1
-        }
+    # Tambahkan timeout untuk instalasi MySQL
+    if ! timeout 300 apt install -y mysql-server; then
+        echo "Timeout saat menginstal MySQL"
+        return 1
     fi
 
-    # Generate password yang aman
-    ROOT_PASS=$(openssl rand -base64 16)
+    # Generate password yang lebih aman
+    ROOT_PASS=$(openssl rand -base64 32)
     
-    # Backup konfigurasi MySQL yang ada
-    if [[ -f /etc/mysql/mysql.conf.d/mysqld.cnf ]]; then
-        cp /etc/mysql/mysql.conf.d/mysqld.cnf /etc/mysql/mysql.conf.d/mysqld.cnf.bak
-    fi
-    
-    # Pastikan MySQL berjalan
+    # Pastikan MySQL berjalan sebelum melakukan konfigurasi
     systemctl start mysql || {
         echo "Gagal menjalankan MySQL"
         return 1
     }
     
-    # Konfigurasi MySQL dengan penanganan error
-    mysql --user=root <<EOF || {
-        echo "Gagal mengkonfigurasi MySQL"
-        return 1
-    }
+    # Tunggu MySQL siap
+    for i in {1..30}; do
+        if mysqladmin ping &>/dev/null; then
+            break
+        fi
+        sleep 1
+    done
+    
+    # Konfigurasi MySQL dengan penanganan error yang lebih baik
+    if ! mysql --user=root <<EOF
 ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${ROOT_PASS}';
 DELETE FROM mysql.user WHERE User='';
 DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
@@ -124,14 +130,18 @@ DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 EOF
+    then
+        echo "Gagal mengkonfigurasi MySQL"
+        return 1
+    fi
 
-    # Simpan kredensial dengan permission yang benar
+    # Simpan kredensial dengan permission yang lebih aman
+    install -m 600 /dev/null /root/.my.cnf
     cat > /root/.my.cnf <<EOF
 [client]
 user=root
 password=${ROOT_PASS}
 EOF
-    chmod 600 /root/.my.cnf
 
     # Validasi input user MySQL
     while true; do
@@ -288,14 +298,22 @@ EOL
 install_phpmyadmin() {
     echo "Menginstal phpMyAdmin..."
     
-    # Menginstal dependensi yang diperlukan
-    apt install -y php-mbstring php-zip php-gd php-json php-curl
-
-    # Download versi terbaru phpMyAdmin
-    PHPMYADMIN_VERSION=$(curl -s https://www.phpmyadmin.net/downloads/ | grep -oP 'phpMyAdmin-\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-    cd /tmp
-    wget "https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"
-    unzip "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"
+    # Tambahkan pengecekan koneksi internet
+    if ! ping -c 1 files.phpmyadmin.net &>/dev/null; then
+        echo "Tidak dapat mengakses files.phpmyadmin.net"
+        return 1
+    fi
+    
+    # Buat direktori temporary yang aman
+    TEMP_DIR=$(mktemp -d)
+    cd "$TEMP_DIR" || exit 1
+    
+    # Download dengan penanganan error
+    if ! wget --timeout=30 "https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
+        echo "Gagal mengunduh phpMyAdmin"
+        rm -rf "$TEMP_DIR"
+        return 1
+    }
     
     # Pindahkan ke direktori web
     rm -rf /usr/share/phpmyadmin
@@ -349,6 +367,10 @@ EOF
     fi
     
     echo "phpMyAdmin telah berhasil diinstal!"
+    
+    # Bersihkan direktori temporary
+    cd /
+    rm -rf "$TEMP_DIR"
 }
 
 # Fungsi untuk menampilkan spinner loading
@@ -934,5 +956,7 @@ check_logger() {
 # Panggil fungsi ini di awal skrip
 check_logger
 
-# Jalankan fungsi main
-main
+# Jalankan fungsi main jika script dijalankan langsung (bukan di-source)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
