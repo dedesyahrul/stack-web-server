@@ -400,99 +400,167 @@ EOL
 
 # Fungsi untuk menginstal phpMyAdmin
 install_phpmyadmin() {
-    echo "Menginstal phpMyAdmin..."
+    echo "Menginstal phpMyAdmin versi terbaru..."
     
-    # Definisikan versi phpMyAdmin
-    PHPMYADMIN_VERSION="5.2.1"
+    # Dapatkan versi terbaru dari API GitHub
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/phpmyadmin/phpmyadmin/releases/latest | grep -oP '"tag_name": "\K[^"]+')
     
-    # Tambahkan pengecekan koneksi internet
-    if ! ping -c 1 files.phpmyadmin.net &>/dev/null; then
-        echo "Tidak dapat mengakses files.phpmyadmin.net"
+    if [ -z "$LATEST_VERSION" ]; then
+        echo "Gagal mendapatkan versi terbaru phpMyAdmin"
         return 1
     fi
+    
+    # Hapus 'RELEASE_' dari tag version
+    PHPMYADMIN_VERSION=${LATEST_VERSION#RELEASE_}
+    echo "Versi terbaru phpMyAdmin: $PHPMYADMIN_VERSION"
     
     # Buat direktori temporary yang aman
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR" || exit 1
     
-    # Download dengan penanganan error
-    if ! wget --timeout=30 "https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
-        echo "Gagal mengunduh phpMyAdmin"
+    # Download dengan penanganan error dan retry mechanism
+    MAX_RETRIES=3
+    RETRY_COUNT=0
+    DOWNLOAD_URL="https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"
+    
+    echo "Mengunduh dari: $DOWNLOAD_URL"
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if wget --timeout=30 --tries=3 "$DOWNLOAD_URL"; then
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        echo "Gagal mengunduh, mencoba lagi... ($RETRY_COUNT/$MAX_RETRIES)"
+        sleep 5
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        echo "Gagal mengunduh phpMyAdmin setelah $MAX_RETRIES percobaan"
         rm -rf "$TEMP_DIR"
         return 1
     fi
     
-    # Tambahkan verifikasi checksum
-    PHPMYADMIN_SHA256="<expected_sha256_checksum>"
-    
-    # Verifikasi file yang didownload
-    if ! echo "$PHPMYADMIN_SHA256 phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip" | sha256sum -c; then
-        log_error "Verifikasi checksum phpMyAdmin gagal"
+    # Ekstrak file
+    if ! unzip -q "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
+        echo "Gagal mengekstrak phpMyAdmin"
+        rm -rf "$TEMP_DIR"
         return 1
     fi
     
-    # Tambahkan penanganan error saat ekstrak
-    if ! unzip -q "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
-        log_error "Gagal mengekstrak phpMyAdmin"
-        return 1
+    # Backup konfigurasi lama jika ada
+    if [ -f /usr/share/phpmyadmin/config.inc.php ]; then
+        cp /usr/share/phpmyadmin/config.inc.php "${TEMP_DIR}/config.inc.php.backup"
     fi
     
     # Pindahkan ke direktori web
     rm -rf /usr/share/phpmyadmin
     mv "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages" /usr/share/phpmyadmin
+    
+    # Kembalikan konfigurasi lama jika ada
+    if [ -f "${TEMP_DIR}/config.inc.php.backup" ]; then
+        mv "${TEMP_DIR}/config.inc.php.backup" /usr/share/phpmyadmin/config.inc.php
+    else
+        # Buat konfigurasi baru jika tidak ada backup
+        cp /usr/share/phpmyadmin/config.sample.inc.php /usr/share/phpmyadmin/config.inc.php
+        BLOWFISH_SECRET=$(openssl rand -base64 32)
+        sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '$BLOWFISH_SECRET';/" /usr/share/phpmyadmin/config.inc.php
+    fi
+    
+    # Buat dan atur permission direktori temp
     mkdir -p /usr/share/phpmyadmin/tmp
     chown -R www-data:www-data /usr/share/phpmyadmin
     chmod 777 /usr/share/phpmyadmin/tmp
     
-    # Buat konfigurasi phpMyAdmin
-    cp /usr/share/phpmyadmin/config.sample.inc.php /usr/share/phpmyadmin/config.inc.php
+    # Deteksi versi PHP yang terinstal
+    PHP_VERSIONS=$(ls /etc/php/ | grep -E '^[0-9]+\.[0-9]+$' | sort -V)
+    LATEST_PHP=$(echo "$PHP_VERSIONS" | tail -n 1)
     
-    # Generate random blowfish secret
-    BLOWFISH_SECRET=$(openssl rand -base64 32)
-    sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '$BLOWFISH_SECRET';/" /usr/share/phpmyadmin/config.inc.php
-    
-    # Konfigurasi untuk Apache
+    # Konfigurasi untuk web server yang terinstal
     if [ -d "/etc/apache2" ]; then
-        cat > /etc/apache2/conf-available/phpmyadmin.conf <<EOF
+        setup_phpmyadmin_apache "$LATEST_PHP"
+    fi
+    
+    if [ -d "/etc/nginx" ]; then
+        setup_phpmyadmin_nginx "$LATEST_PHP"
+    fi
+    
+    # Buat script update otomatis
+    cat > /usr/local/bin/update-phpmyadmin <<'EOF'
+#!/bin/bash
+# Script untuk update phpMyAdmin ke versi terbaru
+LATEST_VERSION=$(curl -s https://api.github.com/repos/phpmyadmin/phpmyadmin/releases/latest | grep -oP '"tag_name": "\K[^"]+')
+CURRENT_VERSION=$(grep -oP "version': '\K[^']+" /usr/share/phpmyadmin/libraries/classes/Version.php 2>/dev/null || echo "0")
+
+if [ "$LATEST_VERSION" != "RELEASE_$CURRENT_VERSION" ]; then
+    echo "Update tersedia: $CURRENT_VERSION -> ${LATEST_VERSION#RELEASE_}"
+    /root/install_stack.sh phpmyadmin
+else
+    echo "phpMyAdmin sudah versi terbaru ($CURRENT_VERSION)"
+fi
+EOF
+    chmod +x /usr/local/bin/update-phpmyadmin
+    
+    # Tambahkan ke crontab untuk pengecekan update otomatis
+    (crontab -l 2>/dev/null; echo "0 0 * * 0 /usr/local/bin/update-phpmyadmin > /var/log/phpmyadmin-update.log 2>&1") | crontab -
+    
+    # Bersihkan direktori temporary
+    cd /
+    rm -rf "$TEMP_DIR"
+    
+    echo "phpMyAdmin versi $PHPMYADMIN_VERSION telah berhasil diinstal!"
+    echo "Script update otomatis telah dibuat di /usr/local/bin/update-phpmyadmin"
+    echo "Pengecekan update akan dilakukan setiap minggu"
+}
+
+# Fungsi helper untuk setup Apache dengan multiple PHP versions
+setup_phpmyadmin_apache() {
+    local php_version=$1
+    
+    cat > /etc/apache2/conf-available/phpmyadmin.conf <<EOF
 Alias /phpmyadmin /usr/share/phpmyadmin
 <Directory /usr/share/phpmyadmin>
     Options SymLinksIfOwnerMatch
     DirectoryIndex index.php
     AllowOverride All
     Require all granted
+    
+    <FilesMatch "\.php$">
+        SetHandler "proxy:unix:/var/run/php/php${php_version}-fpm.sock|fcgi://localhost"
+    </FilesMatch>
 </Directory>
 EOF
-        a2enconf phpmyadmin
-        systemctl reload apache2
-    fi
+    a2enconf phpmyadmin
+    a2enmod proxy_fcgi
+    systemctl reload apache2
+}
 
-    # Konfigurasi untuk Nginx
-    if [ -d "/etc/nginx" ]; then
-        cat > /etc/nginx/conf.d/phpmyadmin.conf <<EOF
+# Fungsi helper untuk setup Nginx dengan multiple PHP versions
+setup_phpmyadmin_nginx() {
+    local php_version=$1
+    
+    cat > /etc/nginx/conf.d/phpmyadmin.conf <<EOF
 location /phpmyadmin {
     root /usr/share/;
     index index.php index.html index.htm;
+    
     location ~ ^/phpmyadmin/(.+\.php)$ {
         try_files \$uri =404;
         root /usr/share/;
-        fastcgi_pass unix:/var/run/php/php8.1-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php${php_version}-fpm.sock;
         fastcgi_index index.php;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
+        fastcgi_buffer_size 128k;
+        fastcgi_buffers 4 256k;
+        fastcgi_busy_buffers_size 256k;
     }
+    
     location ~* ^/phpmyadmin/(.+\.(jpg|jpeg|gif|css|png|js|ico|html|xml|txt))$ {
         root /usr/share/;
     }
 }
 EOF
-        systemctl reload nginx
-    fi
-    
-    echo "phpMyAdmin telah berhasil diinstal!"
-    
-    # Bersihkan direktori temporary
-    cd /
-    rm -rf "$TEMP_DIR"
+    systemctl reload nginx
 }
 
 # Fungsi untuk menampilkan spinner loading
