@@ -188,6 +188,15 @@ EOF
     chmod 600 /root/mysql_credentials.txt
 }
 
+# Tambahkan definisi fungsi log_progress di bagian atas skrip
+log_progress() {
+    local step=$1
+    local total=$2
+    local message=$3
+    echo -ne "\r[${step}/${total}] ${message}"
+    logger -t install_stack "[PROGRESS] ${message}"
+}
+
 # Fungsi untuk menginstal LEMP
 install_lemp() {
     local total_steps=4
