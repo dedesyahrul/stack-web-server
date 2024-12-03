@@ -402,114 +402,70 @@ EOL
 install_phpmyadmin() {
     echo "Menginstal phpMyAdmin versi terbaru..."
     
-    # Dapatkan versi terbaru dari API GitHub
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/phpmyadmin/phpmyadmin/releases/latest | grep -oP '"tag_name": "\K[^"]+')
-    
-    if [ -z "$LATEST_VERSION" ]; then
-        echo "Gagal mendapatkan versi terbaru phpMyAdmin"
-        return 1
-    fi
-    
-    # Hapus 'RELEASE_' dari tag version
-    PHPMYADMIN_VERSION=${LATEST_VERSION#RELEASE_}
-    echo "Versi terbaru phpMyAdmin: $PHPMYADMIN_VERSION"
-    
     # Buat direktori temporary yang aman
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR" || exit 1
     
-    # Download dengan penanganan error dan retry mechanism
-    MAX_RETRIES=3
-    RETRY_COUNT=0
-    DOWNLOAD_URL="https://files.phpmyadmin.net/phpMyAdmin/${PHPMYADMIN_VERSION}/phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"
+    # Unduh phpMyAdmin menggunakan URL alternatif dari GitHub
+    echo "Mengunduh phpMyAdmin dari GitHub..."
+    LATEST_VERSION="5.2.1"  # Set versi terbaru secara manual
+    DOWNLOAD_URL="https://github.com/phpmyadmin/phpmyadmin/releases/download/RELEASE_${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
     
     echo "Mengunduh dari: $DOWNLOAD_URL"
     
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if wget --timeout=30 --tries=3 "$DOWNLOAD_URL"; then
-            break
+    # Coba unduh dengan wget
+    if ! wget --no-verbose "$DOWNLOAD_URL"; then
+        # Jika wget gagal, coba dengan curl
+        if ! curl -L -O "$DOWNLOAD_URL"; then
+            echo "Gagal mengunduh phpMyAdmin. Mencoba metode alternatif..."
+            
+            # Metode alternatif: Unduh dari SourceForge
+            SF_URL="https://downloads.sourceforge.net/project/phpmyadmin/phpMyAdmin/${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
+            if ! wget --no-verbose "$SF_URL"; then
+                echo "Semua metode pengunduhan gagal"
+                rm -rf "$TEMP_DIR"
+                return 1
+            fi
         fi
-        RETRY_COUNT=$((RETRY_COUNT + 1))
-        echo "Gagal mengunduh, mencoba lagi... ($RETRY_COUNT/$MAX_RETRIES)"
-        sleep 5
-    done
-    
-    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        echo "Gagal mengunduh phpMyAdmin setelah $MAX_RETRIES percobaan"
-        rm -rf "$TEMP_DIR"
-        return 1
     fi
     
     # Ekstrak file
-    if ! unzip -q "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
-        echo "Gagal mengekstrak phpMyAdmin"
-        rm -rf "$TEMP_DIR"
-        return 1
-    fi
+    unzip -q "phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
     
     # Backup konfigurasi lama jika ada
-    if [ -f /usr/share/phpmyadmin/config.inc.php ]; then
-        cp /usr/share/phpmyadmin/config.inc.php "${TEMP_DIR}/config.inc.php.backup"
+    if [ -d "/usr/share/phpmyadmin" ]; then
+        mv /usr/share/phpmyadmin/config.inc.php "$TEMP_DIR/config.inc.php.backup"
+        rm -rf /usr/share/phpmyadmin
     fi
     
     # Pindahkan ke direktori web
-    rm -rf /usr/share/phpmyadmin
-    mv "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages" /usr/share/phpmyadmin
+    mv "phpMyAdmin-${LATEST_VERSION}-all-languages" /usr/share/phpmyadmin
     
     # Kembalikan konfigurasi lama jika ada
-    if [ -f "${TEMP_DIR}/config.inc.php.backup" ]; then
-        mv "${TEMP_DIR}/config.inc.php.backup" /usr/share/phpmyadmin/config.inc.php
+    if [ -f "$TEMP_DIR/config.inc.php.backup" ]; then
+        mv "$TEMP_DIR/config.inc.php.backup" /usr/share/phpmyadmin/config.inc.php
     else
-        # Buat konfigurasi baru jika tidak ada backup
+        # Buat konfigurasi baru
         cp /usr/share/phpmyadmin/config.sample.inc.php /usr/share/phpmyadmin/config.inc.php
         BLOWFISH_SECRET=$(openssl rand -base64 32)
         sed -i "s/\$cfg\['blowfish_secret'\] = '';/\$cfg\['blowfish_secret'\] = '$BLOWFISH_SECRET';/" /usr/share/phpmyadmin/config.inc.php
     fi
     
+    # Atur permission
+    chown -R www-data:www-data /usr/share/phpmyadmin
+    chmod 755 /usr/share/phpmyadmin
+    
     # Buat dan atur permission direktori temp
     mkdir -p /usr/share/phpmyadmin/tmp
-    chown -R www-data:www-data /usr/share/phpmyadmin
+    chown -R www-data:www-data /usr/share/phpmyadmin/tmp
     chmod 777 /usr/share/phpmyadmin/tmp
     
-    # Deteksi versi PHP yang terinstal
-    PHP_VERSIONS=$(ls /etc/php/ | grep -E '^[0-9]+\.[0-9]+$' | sort -V)
-    LATEST_PHP=$(echo "$PHP_VERSIONS" | tail -n 1)
-    
-    # Konfigurasi untuk web server yang terinstal
-    if [ -d "/etc/apache2" ]; then
-        setup_phpmyadmin_apache "$LATEST_PHP"
-    fi
-    
-    if [ -d "/etc/nginx" ]; then
-        setup_phpmyadmin_nginx "$LATEST_PHP"
-    fi
-    
-    # Buat script update otomatis
-    cat > /usr/local/bin/update-phpmyadmin <<'EOF'
-#!/bin/bash
-# Script untuk update phpMyAdmin ke versi terbaru
-LATEST_VERSION=$(curl -s https://api.github.com/repos/phpmyadmin/phpmyadmin/releases/latest | grep -oP '"tag_name": "\K[^"]+')
-CURRENT_VERSION=$(grep -oP "version': '\K[^']+" /usr/share/phpmyadmin/libraries/classes/Version.php 2>/dev/null || echo "0")
-
-if [ "$LATEST_VERSION" != "RELEASE_$CURRENT_VERSION" ]; then
-    echo "Update tersedia: $CURRENT_VERSION -> ${LATEST_VERSION#RELEASE_}"
-    /root/install_stack.sh phpmyadmin
-else
-    echo "phpMyAdmin sudah versi terbaru ($CURRENT_VERSION)"
-fi
-EOF
-    chmod +x /usr/local/bin/update-phpmyadmin
-    
-    # Tambahkan ke crontab untuk pengecekan update otomatis
-    (crontab -l 2>/dev/null; echo "0 0 * * 0 /usr/local/bin/update-phpmyadmin > /var/log/phpmyadmin-update.log 2>&1") | crontab -
-    
-    # Bersihkan direktori temporary
+    # Bersihkan
     cd /
     rm -rf "$TEMP_DIR"
     
-    echo "phpMyAdmin versi $PHPMYADMIN_VERSION telah berhasil diinstal!"
-    echo "Script update otomatis telah dibuat di /usr/local/bin/update-phpmyadmin"
-    echo "Pengecekan update akan dilakukan setiap minggu"
+    echo "phpMyAdmin versi ${LATEST_VERSION} berhasil diinstal!"
+    echo "Silakan akses di: http://your-domain/phpmyadmin"
 }
 
 # Fungsi helper untuk setup Apache dengan multiple PHP versions
