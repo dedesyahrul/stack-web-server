@@ -59,42 +59,63 @@ add_php_repo() {
 install_php_versions() {
     echo "Menginstal multiple versi PHP..."
     
+    # Pastikan environment variable DEBIAN_FRONTEND tersedia
+    export DEBIAN_FRONTEND=noninteractive
+    
     # Array versi PHP yang akan diinstal
     php_versions=("7.4" "8.0" "8.1" "8.2" "8.3")
     
     for version in "${php_versions[@]}"; do
-        # Tambahkan validasi versi PHP
-        if [[ ! $version =~ ^[0-9]+\.[0-9]+$ ]]; then
-            log_error "Versi PHP tidak valid: $version"
+        echo "Menginstal PHP $version..."
+        
+        # Coba instal dengan retry mechanism
+        max_attempts=3
+        attempt=1
+        
+        while [ $attempt -le $max_attempts ]; do
+            if apt-get install -y -qq \
+                php${version}-fpm \
+                php${version}-cli \
+                php${version}-common \
+                php${version}-curl \
+                php${version}-mbstring \
+                php${version}-mysql \
+                php${version}-xml \
+                php${version}-zip \
+                php${version}-gd \
+                php${version}-intl \
+                php${version}-bcmath; then
+                
+                echo "PHP $version berhasil diinstal"
+                break
+            else
+                echo "Percobaan $attempt gagal. Menunggu sebelum mencoba lagi..."
+                sleep 10
+                ((attempt++))
+            fi
+        done
+        
+        if [ $attempt -gt $max_attempts ]; then
+            echo "Gagal menginstal PHP $version setelah $max_attempts percobaan"
             continue
         fi
         
-        # Tambahkan timeout untuk instalasi
-        if ! timeout 300 DEBIAN_FRONTEND=noninteractive apt install -y php${version}-fpm php${version}-cli; then
-            log_error "Timeout saat menginstal PHP $version"
-            continue
-        fi
-        
-        # Tambahkan penanganan error yang lebih baik
-        if ! DEBIAN_FRONTEND=noninteractive apt install -y php${version}-fpm php${version}-cli php${version}-common \
-            php${version}-curl php${version}-mbstring php${version}-mysql php${version}-xml \
-            php${version}-zip php${version}-gd php${version}-intl php${version}-bcmath; then
-            echo "Gagal menginstal PHP $version"
-            return 1
-        fi
-        
-        # Konfigurasi timezone dengan pengecekan file yang lebih aman
+        # Konfigurasi PHP
         for ini_file in "/etc/php/${version}/fpm/php.ini" "/etc/php/${version}/cli/php.ini"; do
             if [[ -f "$ini_file" ]]; then
-                # Backup file konfigurasi sebelum modifikasi
+                # Backup konfigurasi
                 cp "$ini_file" "${ini_file}.bak"
-                # Gunakan sed yang lebih aman
-                sed -i.bak "s|;date.timezone =|date.timezone = Asia/Jakarta|" "$ini_file"
+                
+                # Update timezone
+                sed -i 's|;date.timezone =|date.timezone = Asia/Jakarta|' "$ini_file"
                 if ! grep -q "date.timezone = Asia/Jakarta" "$ini_file"; then
                     echo "date.timezone = Asia/Jakarta" >> "$ini_file"
                 fi
             fi
         done
+        
+        # Restart PHP-FPM service
+        systemctl restart php${version}-fpm || true
     done
 }
 
