@@ -357,13 +357,13 @@ install_phpmyadmin() {
     if ! echo "$PHPMYADMIN_SHA256 phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip" | sha256sum -c; then
         log_error "Verifikasi checksum phpMyAdmin gagal"
         return 1
-    }
+    fi
     
     # Tambahkan penanganan error saat ekstrak
     if ! unzip -q "phpMyAdmin-${PHPMYADMIN_VERSION}-all-languages.zip"; then
         log_error "Gagal mengekstrak phpMyAdmin"
         return 1
-    }
+    fi
     
     # Pindahkan ke direktori web
     rm -rf /usr/share/phpmyadmin
@@ -584,7 +584,7 @@ verify_system() {
     # Cek disk space
     free_space=$(df -h / | awk 'NR==2 {print $4}' | sed 's/G//')
     if [ $(echo "$free_space < 10" | bc) -eq 1 ]; then
-        echo "⚠️ Peringatan: Ruang disk kurang dari 10GB."
+        echo "⚠��� Peringatan: Ruang disk kurang dari 10GB."
     fi
     
     # Cek koneksi internet
