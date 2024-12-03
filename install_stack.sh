@@ -406,27 +406,31 @@ install_phpmyadmin() {
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR" || exit 1
     
-    # Unduh phpMyAdmin menggunakan URL alternatif dari GitHub
-    echo "Mengunduh phpMyAdmin dari GitHub..."
-    LATEST_VERSION="5.2.1"  # Set versi terbaru secara manual
-    DOWNLOAD_URL="https://github.com/phpmyadmin/phpmyadmin/releases/download/RELEASE_${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
+    # Unduh phpMyAdmin menggunakan URL dari SourceForge
+    LATEST_VERSION="5.2.1"
+    DOWNLOAD_URL="https://files.phpmyadmin.net/phpMyAdmin/${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
     
     echo "Mengunduh dari: $DOWNLOAD_URL"
     
-    # Coba unduh dengan wget
-    if ! wget --no-verbose "$DOWNLOAD_URL"; then
-        # Jika wget gagal, coba dengan curl
-        if ! curl -L -O "$DOWNLOAD_URL"; then
-            echo "Gagal mengunduh phpMyAdmin. Mencoba metode alternatif..."
-            
-            # Metode alternatif: Unduh dari SourceForge
-            SF_URL="https://downloads.sourceforge.net/project/phpmyadmin/phpMyAdmin/${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
-            if ! wget --no-verbose "$SF_URL"; then
+    # Coba unduh dengan wget dan tambahkan opsi --no-check-certificate
+    if ! wget --no-check-certificate "$DOWNLOAD_URL"; then
+        # Jika wget gagal, coba dengan mirror alternatif dari SourceForge
+        SF_URL="https://downloads.sourceforge.net/project/phpmyadmin/phpMyAdmin/${LATEST_VERSION}/phpMyAdmin-${LATEST_VERSION}-all-languages.zip"
+        if ! wget --no-check-certificate "$SF_URL"; then
+            echo "Gagal mengunduh phpMyAdmin. Mencoba dengan curl..."
+            if ! curl -k -L -o "phpMyAdmin-${LATEST_VERSION}-all-languages.zip" "$DOWNLOAD_URL"; then
                 echo "Semua metode pengunduhan gagal"
                 rm -rf "$TEMP_DIR"
                 return 1
             fi
         fi
+    fi
+    
+    # Verifikasi file telah terunduh
+    if [ ! -f "phpMyAdmin-${LATEST_VERSION}-all-languages.zip" ]; then
+        echo "File tidak berhasil diunduh"
+        rm -rf "$TEMP_DIR"
+        return 1
     fi
     
     # Ekstrak file
